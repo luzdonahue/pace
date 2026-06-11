@@ -1054,6 +1054,16 @@ header.app-head{display:flex;align-items:baseline;justify-content:space-between;
     <div id="haptics-status" style="font-size:12px;font-weight:500;color:var(--ink-faint);"></div>
   </div>
 
+  <!-- Your data -->
+  <div class="sec-head-row" style="margin-top:4px;"><div class="sec-title-h">Your data</div></div>
+  <div class="row-list-card" style="padding:14px 16px 16px;">
+    <div style="font-size:12px;color:var(--ink-soft);line-height:1.5;margin-bottom:12px;">Everything lives on this device. A backup file is a nice safety net.</div>
+    <button class="sort-do-now" id="export-data-btn" style="width:100%;min-height:48px;font-size:14px;margin-bottom:10px;">Export my data</button>
+    <button id="import-data-btn" style="width:100%;min-height:48px;font-size:14px;background:var(--paper-warm);border:.5px solid var(--rule);border-radius:13px;color:var(--ink);font-family:'DM Sans',sans-serif;cursor:pointer;">Import data</button>
+    <input type="file" id="import-data-file" accept=".json,application/json" style="display:none;" aria-hidden="true" />
+    <div id="data-msg" role="status" style="font-size:12px;font-weight:500;color:var(--ink-soft);margin-top:10px;line-height:1.5;"></div>
+  </div>
+
   <!-- Wins link -->
   <div style="text-align:center;margin-top:12px;margin-bottom:8px;">
     <button style="background:transparent;border:none;font-family:inherit;font-size:13px;color:var(--ink-faint);text-decoration:underline;text-underline-offset:3px;cursor:pointer;" id="sett-wins-link">your wins →</button>
@@ -1510,11 +1520,111 @@ var DEFAULT_STATE = {
   lastCheckinDate: null
 };
 
+/* ===== STORAGE ADAPTER =====
+   localStorage stays the fast, synchronous mirror the app reads at boot.
+   IndexedDB (database "pace", object store "kv", key "state") is the durable
+   replica — it survives iOS evicting localStorage. Every save writes to both.
+   State is kept in IDB as the same JSON string written to localStorage, so a
+   plain string comparison is a deep compare. */
+var storageAdapter = {
+  _db: null,
+  _idbOk: false,
+  _errFns: [],
+  onPersistError: function(fn){ this._errFns.push(fn); },
+  _fail: function(err){
+    this._errFns.forEach(function(fn){ try{ fn(err); }catch(e){} });
+  },
+  _openDb: function(){
+    return new Promise(function(resolve, reject){
+      if(!window.indexedDB){ reject(new Error('IndexedDB unavailable')); return; }
+      var req;
+      try { req = indexedDB.open('pace', 1); }
+      catch(e){ reject(e); return; }
+      req.onupgradeneeded = function(){
+        var db = req.result;
+        if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      };
+      req.onsuccess = function(){ resolve(req.result); };
+      req.onerror = function(){ reject(req.error || new Error('IndexedDB open failed')); };
+      req.onblocked = function(){ reject(new Error('IndexedDB open blocked')); };
+    });
+  },
+  _idbGet: function(){
+    var db = this._db;
+    return new Promise(function(resolve, reject){
+      var tx = db.transaction('kv', 'readonly');
+      var req = tx.objectStore('kv').get('state');
+      req.onsuccess = function(){ resolve(typeof req.result === 'string' ? req.result : null); };
+      req.onerror = function(){ reject(req.error || new Error('IndexedDB read failed')); };
+    });
+  },
+  _idbPut: function(json){
+    var db = this._db;
+    return new Promise(function(resolve, reject){
+      var tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(json, 'state');
+      tx.oncomplete = function(){ resolve(); };
+      tx.onerror = function(){ reject(tx.error || new Error('IndexedDB write failed')); };
+      tx.onabort = function(){ reject(tx.error || new Error('IndexedDB write aborted')); };
+    });
+  },
+  /* Boot/recovery. Always resolves — the app must never fail to boot
+     because of this layer. On any failure the app simply runs on
+     localStorage alone and the error hook fires. */
+  init: function(){
+    var self = this;
+    return self._openDb().then(function(db){
+      self._db = db;
+      self._idbOk = true;
+      return self._idbGet();
+    }).then(function(idbJson){
+      var lsJson = null;
+      try { lsJson = localStorage.getItem(STORE_KEY); } catch(e){}
+      if(lsJson && !idbJson){
+        // Existing user, first run with this feature: copy to IDB, read it
+        // back, deep-compare; only if identical mark migration done.
+        // The localStorage copy is never deleted or modified.
+        return self._idbPut(lsJson).then(function(){ return self._idbGet(); }).then(function(echo){
+          if(echo === lsJson){
+            try { localStorage.setItem('pace.migrated.v1', '1'); } catch(e){}
+          }
+        });
+      }
+      if(!lsJson && idbJson){
+        // localStorage was evicted — restore it from the durable copy
+        // before the app loads. This is the entire point of the feature.
+        try { localStorage.setItem(STORE_KEY, idbJson); }
+        catch(e){ self._fail(e); }
+      }
+      // Both present → localStorage wins (it's the live mirror); IDB
+      // catches up on the next write. Both empty → brand-new user.
+    }).catch(function(err){
+      self._idbOk = false;
+      self._db = null;
+      self._fail(err);
+    });
+  },
+  read: function(){
+    try { return localStorage.getItem(STORE_KEY); } catch(e){ return null; }
+  },
+  write: function(state){
+    var json;
+    try { json = JSON.stringify(state); }
+    catch(e){ this._fail(e); return; }
+    try { localStorage.setItem(STORE_KEY, json); }
+    catch(e){ this._fail(e); }
+    if(this._idbOk && this._db){
+      var self = this;
+      this._idbPut(json).catch(function(err){ self._fail(err); });
+    }
+  }
+};
+
 var store = {
   _state: null,
   load: function(){
     try {
-      var raw = localStorage.getItem(STORE_KEY);
+      var raw = storageAdapter.read();
       if(raw){ this._state = JSON.parse(raw); }
       else { this._state = JSON.parse(JSON.stringify(DEFAULT_STATE)); }
     } catch(e){ this._state = JSON.parse(JSON.stringify(DEFAULT_STATE)); }
@@ -1527,7 +1637,7 @@ var store = {
     return this._state;
   },
   save: function(){
-    try{ localStorage.setItem(STORE_KEY, JSON.stringify(this._state)); } catch(e){}
+    storageAdapter.write(this._state); // write-through: localStorage + IndexedDB; failures fire onPersistError
   },
   get: function(){ return this._state; },
   updateTask: function(id, patch){
@@ -1544,6 +1654,10 @@ var store = {
     this.save();
   }
 };
+/* Provisional synchronous load so every script block can parse safely.
+   The authoritative load + first render happen in INIT below, after
+   storageAdapter.init() has had the chance to restore an evicted
+   localStorage from IndexedDB. */
 store.load();
 
 /* ===== ROUTER ===== */
@@ -2788,8 +2902,47 @@ function guessCategory(text){
   return 'admin';
 }
 
+// Local (no-AI) brain dump splitter, tuned for raw speech transcripts
+// that arrive with no punctuation. Two passes:
+//   1. split on strong delimiters (newlines, sentence punctuation, commas, connectors)
+//   2. re-split any chunk before each "task starter" phrase ("I need to…", "gotta…")
+// Filler words ("um", "so", "okay") are stripped from the front of each piece.
+var DUMP_DELIMS = /\n+|[.!?;]+|,|\band then\b|\band also\b|\bafter that\b|\bplus\b|\band\b/gi;
+var DUMP_FILLERS = /^(?:um+|uh+|so|like|okay|ok|yeah|well|anyway|right|also|then|and)\b[,\s]*/i;
+var DUMP_STARTERS = "i (?:also |still |really )?(?:need|have|want|got|gotta) to|i should|i must|i'?m going to|i'?ve got to|gotta|don'?t forget(?: to)?|remember(?:ing)? to|make sure (?:i|to)|need to|have to";
+
+function splitOnStarters(s){
+  var re = new RegExp('\\b(?:'+DUMP_STARTERS+')\\b','gi');
+  var idxs = [], m;
+  while((m = re.exec(s)) !== null){
+    if(m.index > 0) idxs.push(m.index);
+    re.lastIndex = m.index + m[0].length;
+  }
+  if(!idxs.length) return [s];
+  var parts = [], prev = 0;
+  for(var i=0;i<idxs.length;i++){ parts.push(s.slice(prev, idxs[i])); prev = idxs[i]; }
+  parts.push(s.slice(prev));
+  return parts;
+}
+
+function cleanDumpPart(s){
+  s = s.replace(/^[\s,.;:!?\-]+|[\s,.;:!?\-]+$/g,'');
+  var prev;
+  do { prev = s; s = s.replace(DUMP_FILLERS,'').trim(); } while(s !== prev && s);
+  do { prev = s; s = s.replace(/[\s,]*\b(?:um+|uh+|also|then|and|so|like|okay|ok|yeah)$/i,'').trim(); } while(s !== prev && s);
+  return s;
+}
+
 function parseDump(text){
-  var parts = text.split(/,|\n| and /).map(function(s){ return s.trim(); }).filter(function(s){ return s.length>2; });
+  var rough = String(text||'').split(DUMP_DELIMS);
+  var parts = [];
+  rough.forEach(function(chunk){
+    if(!chunk || !chunk.trim()) return;
+    splitOnStarters(chunk).forEach(function(p){
+      p = cleanDumpPart(p);
+      if(p.length > 2 && /[a-z]/i.test(p)) parts.push(p);
+    });
+  });
   return parts.map(function(name){
     var cat = guessCategory(name);
     return {name:name, category:cat, priority:3};
@@ -2809,7 +2962,10 @@ function buildSortList(items){
     el.appendChild(row);
   });
   var sub = document.getElementById('ss-sub-1');
-  if(sub) sub.textContent = items.length+' thing'+(items.length!==1?'s':'')+' · grouped by where they seem to fit';
+  if(sub){
+    var methodNote = window._sortMethod === 'ai' ? ' · sorted with AI' : ' · simple sort';
+    sub.textContent = items.length+' thing'+(items.length!==1?'s':'')+' · grouped by where they seem to fit'+methodNote;
+  }
 }
 
 function buildEditList(items){
@@ -2832,7 +2988,8 @@ function buildEditList(items){
   });
 }
 
-function showSortSheet(items){
+function showSortSheet(items, method){
+  window._sortMethod = method || 'simple';
   _sortItems = items;
   window._sortItems = _sortItems;
   buildSortList(_sortItems);
@@ -2848,7 +3005,7 @@ function openSortSheet(){
   if(!text){ showToast('Add something to sort first'); return; }
   var key = localStorage.getItem('pace.apikey');
   if(!key || !window.PaceAI){
-    showSortSheet(parseDump(text));
+    showSortSheet(parseDump(text), 'simple');
     return;
   }
   var btn = document.getElementById('dump-sort-btn');
@@ -2856,7 +3013,7 @@ function openSortSheet(){
   btn.disabled = true;
   window.PaceAI.claudeCall([{
     role:'user',
-    content:'Split this brain dump into individual tasks. Reply ONLY with JSON array: [{"title":string,"name":string,"category":"health"|"selfcare"|"creative"|"work"|"admin"|"home"|"social","priority":1 to 5 where 1 is urgent,"energy":"body"|"mind"|"both"}]. title is a clean 2-6 word card label, imperative style (e.g. "Call pharmacy — refill"), used as the display name on the card. name keeps the user\'s original wording from the dump. Text: '+text
+    content:'Split this brain dump into individual tasks. The text may be a raw speech-to-text transcript: little or no punctuation, filler words (um, uh, like, so), and possibly misrecognized words. Split into distinct tasks even without punctuation — look for task boundaries like "I need to", "also", "and then", or topic changes. Ignore filler words; if a word is clearly a misrecognition, use the most likely intended word. Each task should be ONE actionable thing — never combine unrelated activities into one task. Reply ONLY with a JSON array, no prose, no markdown fences: [{"title":string,"name":string,"category":"health"|"selfcare"|"creative"|"work"|"admin"|"home"|"social","priority":1 to 5 where 1 is urgent,"energy":"body"|"mind"|"both"}]. title is a clean 2-6 word card label, imperative style (e.g. "Call pharmacy — refill"), used as the display name on the card. name keeps the user\'s original wording from the dump (minus fillers). Text: '+text
   }], 1024)
   .then(function(raw){
     var json = raw.replace(/```[a-z]*\n?/gi,'').replace(/```/g,'').trim();
@@ -2875,7 +3032,7 @@ function openSortSheet(){
         energy: it.energy||'both'
       };
     }).filter(function(it){ return it.name.length>0; });
-    showSortSheet(arr);
+    showSortSheet(arr, 'ai');
   })
   .catch(function(e){
     var msg = e && e.message;
@@ -2884,7 +3041,7 @@ function openSortSheet(){
     } else {
       showToast("Couldn't reach the AI — using simple sorting instead");
     }
-    showSortSheet(parseDump(text));
+    showSortSheet(parseDump(text), 'simple');
   })
   .finally(function(){
     btn.innerHTML = 'Sort into canvas <span style="font-size:17px">→</span>';
@@ -2933,7 +3090,31 @@ document.getElementById('ss-go-today').addEventListener('click', function(){
 });
 
 /* ===== INIT ===== */
-(function init(){
+var _persistToastShown = false;
+storageAdapter.onPersistError(function(){
+  if(_persistToastShown) return;
+  _persistToastShown = true;
+  showToast("Couldn't save just now — your changes are held in memory. Consider exporting a backup.");
+});
+
+/* Ask the browser for persistent storage once, after the first real user
+   interaction (browsers ignore the request on page load). No UI about it. */
+function requestPersistentStorage(){
+  document.removeEventListener('pointerdown', requestPersistentStorage);
+  document.removeEventListener('keydown', requestPersistentStorage);
+  if(!(navigator.storage && navigator.storage.persist)) return;
+  navigator.storage.persist().then(function(granted){
+    var s = store.get();
+    if(s && s.prefs && s.prefs.persistentStorage !== granted){
+      s.prefs.persistentStorage = granted;
+      store.save();
+    }
+  }, function(){ /* request denied/unavailable — not a data-save failure */ });
+}
+
+var _booted = false;
+function bootApp(){
+  store.load(); // authoritative load — picks up anything init() restored from IndexedDB
   var state = store.get();
   renderToday();
   applyCheckinGreeting();
@@ -2946,7 +3127,21 @@ document.getElementById('ss-go-today').addEventListener('click', function(){
   } else {
     showScreen('today');
   }
-})();
+  document.addEventListener('pointerdown', requestPersistentStorage);
+  document.addEventListener('keydown', requestPersistentStorage);
+}
+function bootOnce(){ if(_booted) return; _booted = true; bootApp(); }
+
+storageAdapter.init().then(function(){
+  if(!_booted){ bootOnce(); return; }
+  // The safety timeout below booted first (IDB was slow). If init since
+  // restored newer state into localStorage, show it.
+  var disk = storageAdapter.read();
+  if(disk && disk !== JSON.stringify(store.get())) bootApp();
+}, bootOnce);
+/* Safety net: if IndexedDB hangs, boot on localStorage alone. The app must
+   never fail to boot because of the durability layer. */
+setTimeout(bootOnce, 2500);
 
 window.openDrawer = openDrawer;
 window.timeOfDay = timeOfDay;
@@ -3894,7 +4089,7 @@ function setupCatDrag(row, fromIdx){
 }
 
 // Toggles
-function setupToggle(id, storeKey){
+function syncToggle(id, storeKey){
   var btn = document.getElementById(id);
   if(!btn) return;
   var state = store.get();
@@ -3902,6 +4097,11 @@ function setupToggle(id, storeKey){
   var on = !!state.prefs[storeKey];
   btn.classList.toggle('on', on);
   btn.setAttribute('aria-checked', on);
+}
+function setupToggle(id, storeKey){
+  var btn = document.getElementById(id);
+  if(!btn) return;
+  syncToggle(id, storeKey);
   btn.addEventListener('click', function(){
     var s2 = store.get();
     if(!s2.prefs) s2.prefs={};
@@ -3963,12 +4163,72 @@ document.addEventListener('click', function(e){
     loadProfile();
     renderCatTree();
     loadStepper();
+    syncToggle('tog-reminders','reminders');
+    syncToggle('tog-flare','flare');
     var state=store.get();
     var banner=document.getElementById('flare-banner');
     if(banner) banner.classList.toggle('show',!!(state.prefs&&state.prefs.flare));
   }
 });
 window._renderCatTree = renderCatTree;
+
+/* ===== Data export / import =====
+   Export is built from store.get() only — the separate localStorage keys
+   pace.apikey / pace.whisper / pace.haptics are never part of it. */
+var exportBtn = document.getElementById('export-data-btn');
+var importBtn = document.getElementById('import-data-btn');
+var importFile = document.getElementById('import-data-file');
+var dataMsg = document.getElementById('data-msg');
+function setDataMsg(msg){ if(dataMsg) dataMsg.textContent = msg || ''; }
+
+if(exportBtn){
+  exportBtn.addEventListener('click', function(){
+    var payload = { schema: 1, exportedAt: new Date().toISOString(), state: store.get() };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'pace-backup-' + new Date().toISOString().slice(0,10) + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    setDataMsg('Backup saved to your downloads.');
+  });
+}
+
+if(importBtn && importFile){
+  importBtn.addEventListener('click', function(){ importFile.value=''; importFile.click(); });
+  importFile.addEventListener('change', function(){
+    var file = importFile.files && importFile.files[0];
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      var data = null;
+      try { data = JSON.parse(reader.result); } catch(e){ data = null; }
+      var valid = data && data.schema === 1 && data.state && Array.isArray(data.state.tasks);
+      if(!valid){
+        setDataMsg("That file doesn't look like a Pace backup — nothing was changed.");
+        return;
+      }
+      var ok = window.confirm('This replaces your current data — export a backup first?\n\nOK imports the file. Cancel keeps everything as it is.');
+      if(!ok){ setDataMsg('No changes made.'); return; }
+      store._state = data.state;
+      store.save();   // through the adapter: localStorage + IndexedDB
+      store.load();   // re-read + backfill any missing fields
+      loadProfile();
+      renderCatTree();
+      loadStepper();
+      syncToggle('tog-reminders','reminders');
+      syncToggle('tog-flare','flare');
+      window.Pace.renderToday();
+      window.Pace.applyCheckinGreeting();
+      setDataMsg('Imported — your data is back.');
+    };
+    reader.onerror = function(){ setDataMsg("Couldn't read that file — nothing was changed."); };
+    reader.readAsText(file);
+  });
+}
 })();
 </script>
 
@@ -4842,8 +5102,8 @@ if(window.PaceAI && origClaudeCall){
     "      const opts = { dtype:'q8', progress_callback: (p) => {",
     "        if(p && p.status==='progress' && p.total){ postMessage({type:'progress', pct: Math.round(p.loaded/p.total*100)}); }",
     "      }};",
-    "      try { return await pipeline('automatic-speech-recognition','onnx-community/whisper-tiny.en', {...opts, device:'webgpu'}); }",
-    "      catch(e){ return await pipeline('automatic-speech-recognition','onnx-community/whisper-tiny.en', {...opts, device:'wasm'}); }",
+    "      try { return await pipeline('automatic-speech-recognition','onnx-community/whisper-base.en', {...opts, device:'webgpu'}); }",
+    "      catch(e){ return await pipeline('automatic-speech-recognition','onnx-community/whisper-base.en', {...opts, device:'wasm'}); }",
     "    })();",
     "  }",
     "  return pipePromise;",
