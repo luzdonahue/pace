@@ -2728,6 +2728,8 @@ function escHtml2(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 // Mic — rebuilt
 var _micRec = null;
 var _micListening = false;
+// Read-only view for other script blocks (IIFE scopes don't cross <script> boundaries)
+window._isMicListening = function(){ return _micListening; };
 
 function resetMicUI(){
   var btn = document.getElementById('dump-mic');
@@ -3261,7 +3263,7 @@ function updateWhisperUI(){
       stat.style.color = 'var(--ink-soft)';
     }
   }
-  if(lbl && !_micListening && !window._whisperRecording){
+  if(lbl && !(window._isMicListening && window._isMicListening()) && !window._whisperRecording){
     lbl.textContent = on ? 'or speak a brain dump (hq)' : 'or speak a brain dump';
   }
 }
