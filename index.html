@@ -2616,6 +2616,7 @@ function resetMicUI(){
   _micListening = false;
   _micRec = null;
   window._whisperRecording = false;
+  window._whisperTranscribing = false;
   window._whisperStream = null;
 }
 
@@ -2626,6 +2627,14 @@ document.getElementById('dump-mic').addEventListener('click', function(){
 
   // ---- WHISPER PATH ----
   if(window.PaceWhisper && window.PaceWhisper.enabled() && !window.__whisperImportFailed){
+    // Tap while transcribing: cancel — never trap the user
+    if(window._whisperTranscribing){
+      window.PaceWhisper.cancel();
+      window._whisperTranscribing = false;
+      resetMicUI();
+      showToast('Cancelled — no harm done');
+      return;
+    }
     // Second tap: stop recording
     if(window._whisperRecording && window._whisperMR){
       try{ window._whisperMR.stop(); } catch(e){}
@@ -2643,10 +2652,15 @@ document.getElementById('dump-mic').addEventListener('click', function(){
       mr.ondataavailable = function(e){ if(e.data && e.data.size > 0) chunks.push(e.data); };
       mr.onstop = function(){
         stream.getTracks().forEach(function(t){ t.stop(); });
+        window._whisperRecording = false;
+        window._whisperTranscribing = true;
         if(btn){ btn.classList.remove('listening'); btn.classList.add('recording'); }
-        if(lbl){ lbl.textContent = 'transcribing… (first time downloads the model)'; }
+        if(lbl){ lbl.textContent = 'working on it… tap to cancel'; }
         var blob = new Blob(chunks, {type: mr.mimeType || 'audio/webm'});
-        window.PaceWhisper.transcribe(blob).then(function(text){
+        window.PaceWhisper.transcribe(blob, function(progressMsg){
+          if(lbl && window._whisperTranscribing){ lbl.textContent = progressMsg + ' · tap to cancel'; }
+        }).then(function(text){
+          window._whisperTranscribing = false;
           if(text && text.trim()){
             var existing = ta.value || '';
             var sep = existing && !existing.endsWith(' ') && !existing.endsWith('\n') ? ' ' : '';
@@ -2654,7 +2668,10 @@ document.getElementById('dump-mic').addEventListener('click', function(){
           }
           resetMicUI();
         }).catch(function(err){
-          console.warn('Whisper transcribe failed:', err);
+          window._whisperTranscribing = false;
+          var msg = String(err && err.message || '');
+          if(msg === 'cancelled'){ resetMicUI(); return; }
+          if(msg === 'timeout'){ showToast('That took too long — try again on wifi, or use basic voice'); resetMicUI(); return; }
           showToast("Voice model couldn’t load — using basic voice");
           resetMicUI();
           // fall back to Web Speech for this attempt
@@ -2738,6 +2755,14 @@ document.getElementById('dump-mic').addEventListener('click', function(){
   };
 
   try{ rec.start(); } catch(e){ resetMicUI(); showToast("Couldn't start microphone"); }
+
+  // watchdog — some browsers (iOS) never fire onend; never leave the user stuck
+  setTimeout(function(){
+    if(_micListening && _micRec === rec){
+      try{ rec.stop(); } catch(e){}
+      setTimeout(function(){ if(_micListening && _micRec === rec){ resetMicUI(); } }, 1500);
+    }
+  }, 45000);
 });
 
 /* ===== SORT SHEET ===== */
@@ -4805,62 +4830,104 @@ if(window.PaceAI && origClaudeCall){
 })();
 </script>
 
-<script type="module">
-/* ===== WHISPER MODULE (transformers.js) ===== */
-try {
+<script>
+/* ===== WHISPER MODULE — runs in a Web Worker so the UI never freezes ===== */
+(function(){
+  var WORKER_SRC = [
+    "import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.1';",
+    "let pipePromise = null;",
+    "function getPipe(){",
+    "  if(!pipePromise){",
+    "    pipePromise = (async () => {",
+    "      const opts = { dtype:'q8', progress_callback: (p) => {",
+    "        if(p && p.status==='progress' && p.total){ postMessage({type:'progress', pct: Math.round(p.loaded/p.total*100)}); }",
+    "      }};",
+    "      try { return await pipeline('automatic-speech-recognition','onnx-community/whisper-tiny.en', {...opts, device:'webgpu'}); }",
+    "      catch(e){ return await pipeline('automatic-speech-recognition','onnx-community/whisper-tiny.en', {...opts, device:'wasm'}); }",
+    "    })();",
+    "  }",
+    "  return pipePromise;",
+    "}",
+    "onmessage = async (e) => {",
+    "  if(e.data.type !== 'transcribe') return;",
+    "  try {",
+    "    const pipe = await getPipe();",
+    "    postMessage({type:'status', msg:'transcribing'});",
+    "    const result = await pipe(e.data.audio);",
+    "    postMessage({type:'result', text: (result && result.text) ? result.text.trim() : ''});",
+    "  } catch(err){ postMessage({type:'error', msg: String(err && err.message || err)}); }",
+    "};"
+  ].join('\n');
+
+  var worker = null;
+  function getWorker(){
+    if(worker) return worker;
+    var blob = new Blob([WORKER_SRC], {type:'text/javascript'});
+    worker = new Worker(URL.createObjectURL(blob), {type:'module'});
+    return worker;
+  }
+
+  async function decodeTo16kMono(blob){
+    var arrayBuf = await blob.arrayBuffer();
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    var audioCtx = new Ctx({ sampleRate: 16000 });
+    var decoded = await audioCtx.decodeAudioData(arrayBuf);
+    try { audioCtx.close(); } catch(e){}
+    var nCh = decoded.numberOfChannels, len = decoded.length;
+    var mono = new Float32Array(len);
+    for(var ch=0; ch<nCh; ch++){
+      var d = decoded.getChannelData(ch);
+      for(var i=0;i<len;i++){ mono[i]+=d[i]; }
+    }
+    if(nCh>1){ for(var j=0;j<len;j++){ mono[j]/=nCh; } }
+    return mono;
+  }
+
+  var _activeReject = null;
   window.PaceWhisper = {
-    enabled: function() {
-      return localStorage.getItem('pace.whisper') === '1';
+    enabled: function(){ return localStorage.getItem('pace.whisper') === '1'; },
+    cancel: function(){
+      if(worker){ try{ worker.terminate(); }catch(e){} worker = null; }
+      if(_activeReject){ _activeReject(new Error('cancelled')); _activeReject = null; }
     },
-    transcribe: async function(blob) {
-      if (!window.__whisperPipe) {
-        window.__whisperPipe = (async () => {
-          const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.1');
-          let pipe;
-          try {
-            pipe = await pipeline(
-              'automatic-speech-recognition',
-              'onnx-community/whisper-base.en',
-              { device: 'webgpu', dtype: 'q8' }
-            );
-          } catch (gpuErr) {
-            pipe = await pipeline(
-              'automatic-speech-recognition',
-              'onnx-community/whisper-base.en',
-              { device: 'wasm', dtype: 'q8' }
-            );
-          }
-          window.__whisperReady = true;
-          if (typeof updateWhisperUI === 'function') { try { updateWhisperUI(); } catch(e){} }
-          return pipe;
-        })();
-      }
-      const pipe = await window.__whisperPipe;
-      // Decode audio blob to 16kHz mono Float32Array
-      const arrayBuf = await blob.arrayBuffer();
-      const audioCtx = new AudioContext({ sampleRate: 16000 });
-      const decoded = await audioCtx.decodeAudioData(arrayBuf);
-      audioCtx.close();
-      // Mix down to mono
-      const nCh = decoded.numberOfChannels;
-      const len = decoded.length;
-      const mono = new Float32Array(len);
-      for (let ch = 0; ch < nCh; ch++) {
-        const chData = decoded.getChannelData(ch);
-        for (let i = 0; i < len; i++) { mono[i] += chData[i]; }
-      }
-      if (nCh > 1) { for (let i = 0; i < len; i++) { mono[i] /= nCh; } }
-      const result = await pipe(mono);
-      return (result && result.text) ? result.text.trim() : '';
+    transcribe: function(blob, onProgress){
+      return new Promise(function(resolve, reject){
+        var settled = false;
+        _activeReject = function(err){ if(!settled){ settled = true; reject(err); } };
+        // hard watchdog: never leave the user stuck
+        var watchdog = setTimeout(function(){
+          window.PaceWhisper.cancel();
+          if(!settled){ settled = true; reject(new Error('timeout')); }
+        }, 120000);
+        decodeTo16kMono(blob).then(function(mono){
+          var w = getWorker();
+          w.onmessage = function(e){
+            var m = e.data || {};
+            if(m.type === 'progress' && onProgress){ onProgress('downloading voice model… '+m.pct+'%'); }
+            else if(m.type === 'status' && onProgress){ onProgress('transcribing…'); }
+            else if(m.type === 'result'){
+              clearTimeout(watchdog); window.__whisperReady = true;
+              if(typeof updateWhisperUI === 'function'){ try{ updateWhisperUI(); }catch(err){} }
+              if(!settled){ settled = true; _activeReject = null; resolve(m.text); }
+            }
+            else if(m.type === 'error'){
+              clearTimeout(watchdog);
+              if(!settled){ settled = true; _activeReject = null; reject(new Error(m.msg)); }
+            }
+          };
+          w.onerror = function(err){
+            clearTimeout(watchdog);
+            if(!settled){ settled = true; _activeReject = null; reject(new Error('worker failed')); }
+          };
+          w.postMessage({type:'transcribe', audio: mono}, [mono.buffer]);
+        }).catch(function(err){
+          clearTimeout(watchdog);
+          if(!settled){ settled = true; _activeReject = null; reject(err); }
+        });
+      });
     }
   };
-} catch(moduleErr) {
-  window.__whisperImportFailed = true;
-  window.PaceWhisper = {
-    enabled: function() { return false; },
-    transcribe: async function() { return ''; }
-  };
-}
+})();
 </script>
 
 </body>
