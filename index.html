@@ -1634,6 +1634,11 @@ var store = {
     if(!s.wins) s.wins=[];
     if(!s.prefs) s.prefs={reminders:false,flare:false,medTasks:3};
     if(!s.categoryParents) s.categoryParents={};
+    // heal sparse states (e.g. hand-edited imports) so nothing crashes later
+    if(!Array.isArray(s.tasks)) s.tasks=[];
+    if(!Array.isArray(s.checkins)) s.checkins=[];
+    if(!s.profile) s.profile={name:'',intention:''};
+    if(!Array.isArray(s.categories) || !s.categories.length) s.categories=['health','selfcare','creative','work','admin','home','social'];
     return this._state;
   },
   save: function(){
@@ -2443,7 +2448,9 @@ function updateCICapacity(){
   var avg = (ciValues.energy + ciValues.focus + (10 - ciValues.pain)) / 3;
   var pct = Math.round(avg*10);
   var level = avg>=7?'High':avg>=4?'Medium':'Low';
-  var tasks = avg>=7?5:avg>=4?3:2;
+  var stCap = store.get();
+  var medN = (stCap.prefs && stCap.prefs.medTasks) ? stCap.prefs.medTasks : 3;
+  var tasks = avg>=7?5:avg>=4?medN:2;
   var bar = document.getElementById('ci-cap-bar');
   if(bar) bar.style.width = pct+'%';
   var note = document.getElementById('ci-cap-note');
@@ -3094,7 +3101,11 @@ var _persistToastShown = false;
 storageAdapter.onPersistError(function(){
   if(_persistToastShown) return;
   _persistToastShown = true;
-  showToast("Couldn't save just now — your changes are held in memory. Consider exporting a backup.");
+  var showIt = function(){ showToast("Couldn't save just now — your changes are held in memory. Consider exporting a backup."); };
+  // The toast element lives later in the document; if a failure fires this
+  // early in the parse, wait for the DOM instead of losing the message.
+  if(document.getElementById('global-toast')) showIt();
+  else document.addEventListener('DOMContentLoaded', showIt);
 });
 
 /* Ask the browser for persistent storage once, after the first real user
