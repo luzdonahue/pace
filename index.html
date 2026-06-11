@@ -177,8 +177,6 @@ header.app-head{display:flex;align-items:baseline;justify-content:space-between;
 .tile.s-xs .ttl{font-size:10px;-webkit-line-clamp:2;line-height:1.2;}
 .tile.s-mini{width:46px;height:30px;padding:6px 7px;border-radius:8px;}
 .tile.s-mini .ttl{font-size:9px;-webkit-line-clamp:1;}
-.tile.s-dot{width:16px;height:16px;padding:0;border-radius:4px;}
-.tile.s-dot .ttl,.tile.s-dot .pillrow{display:none;}
 .tile.is-done{opacity:0;transform:scale(.92) translateY(-4px);filter:saturate(.6);pointer-events:none;}
 
 /* Tile colors */
@@ -1042,6 +1040,18 @@ header.app-head{display:flex;align-items:baseline;justify-content:space-between;
     </div>
     <div style="font-size:12px;color:var(--ink-soft);line-height:1.5;margin-bottom:6px;">Downloads a ~40 MB model the first time, then voice works offline and much more accurately. Works best on the installed app.</div>
     <div id="whisper-status" style="font-size:12px;font-weight:500;color:var(--ink-faint);"></div>
+  </div>
+
+  <!-- Haptics toggle -->
+  <div class="row-list-card" style="padding:14px 16px 16px;margin-top:8px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <span style="font-size:14px;color:var(--ink);font-family:'DM Sans',sans-serif;">Gentle haptics</span>
+      <button id="haptics-toggle" role="switch" aria-checked="true" style="width:44px;height:26px;border-radius:13px;border:none;cursor:pointer;position:relative;transition:background .2s;background:var(--rule);flex-shrink:0;" onclick="toggleHaptics()">
+        <span id="haptics-knob" style="position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.18);display:block;"></span>
+      </button>
+    </div>
+    <div style="font-size:12px;color:var(--ink-soft);line-height:1.5;margin-bottom:6px;">Soft, short taps when you complete, sort, or release things — never alarming, never for errors. Works on Android; iPhones don't allow web vibration yet.</div>
+    <div id="haptics-status" style="font-size:12px;font-weight:500;color:var(--ink-faint);"></div>
   </div>
 
   <!-- Wins link -->
@@ -4547,28 +4557,7 @@ if(bdConfirm){
   });
 }
 
-/* --- Drawer: repeatCount display --- */
-var origOpenDrawer = window.openDrawer;
-window.openDrawer = function(taskId){
-  if(origOpenDrawer) origOpenDrawer(taskId);
-  var state = store.get();
-  var task = state.tasks.find(function(t){ return t.id===taskId; });
-  if(!task) return;
-  var drName = document.getElementById('dr-name');
-  if(drName){
-    var rc = task.repeatCount||0;
-    var existing = drName.nextElementSibling;
-    if(existing && existing.id==='dr-repeat-note') existing.remove();
-    if(rc > 1){
-      var note = document.createElement('div');
-      note.id = 'dr-repeat-note';
-      note.style.cssText = 'font-size:11px;color:#A89E91;margin-top:3px;font-style:italic;';
-      note.textContent = 'has come up \xd7'+rc;
-      drName.parentNode.insertBefore(note, drName.nextSibling);
-    }
-  }
-};
-if(window.Pace) window.Pace.openDrawer = window.openDrawer;
+/* (repeat-count note renders inside the core openDrawer) */
 
 })();
 </script>
@@ -4602,9 +4591,11 @@ function finish(){
   var taskId = _state ? _state.taskId : null;
   var mins = _state ? _state.mins : 0;
   if(taskId && window.Pace){
-    window.Pace.store.updateTask(taskId, {minutesGiven:(window.Pace.store.get().tasks.find(function(t){return t.id===taskId;})||{}).minutesGiven||0 + mins});
+    var prevMins = (window.Pace.store.get().tasks.find(function(t){return t.id===taskId;})||{}).minutesGiven || 0;
+    window.Pace.store.updateTask(taskId, {minutesGiven: prevMins + mins});
   }
   _state = null;
+  if(window.PaceHaptics) window.PaceHaptics.play('timerEnd');
   if(window.Pace && window.Pace.showToast) window.Pace.showToast('Time. Stopping is allowed — it counts.');
   if(window.Pace && window.Pace.renderToday) window.Pace.renderToday();
   updateDrawerStatus();
@@ -4742,6 +4733,77 @@ if(window.PaceAI && origClaudeCall){
 })();
 </script>
 
+
+<script>
+/* ===== GENTLE HAPTICS =====
+   Neurodivergent-friendly principles:
+   - short and soft (6-26ms pulses), predictable, semantic
+   - celebration > alert: completions get the richest pattern
+   - NEVER vibrates for errors or warnings — calm is the baseline
+   - throttled so feedback can't stack into noise */
+(function(){
+  var PATTERNS = {
+    tick:       [6],               // small selection (pills, priority steps)
+    select:     [10],              // committing a choice (merge, do-now)
+    done:       [12, 70, 22],      // task complete — soft double heartbeat
+    release:    [10, 50, 10],      // letting go / sending to someday
+    timerStart: [12],
+    timerEnd:   [14, 80, 14, 80, 26], // gentle landing, slightly rising
+    breakdown:  [8, 40, 8]         // making something smaller
+  };
+  var lastAt = 0;
+  function supported(){ return typeof navigator !== 'undefined' && 'vibrate' in navigator; }
+  function enabled(){ return supported() && localStorage.getItem('pace.haptics') !== '0'; }
+  function play(name){
+    if(!enabled()) return;
+    var now = Date.now();
+    if(now - lastAt < 250) return; // never stack buzzes
+    lastAt = now;
+    try { navigator.vibrate(PATTERNS[name] || PATTERNS.tick); } catch(e){}
+  }
+  window.PaceHaptics = { play: play, enabled: enabled, supported: supported };
+
+  function updateHapticsUI(){
+    var tog = document.getElementById('haptics-toggle');
+    var knob = document.getElementById('haptics-knob');
+    var stat = document.getElementById('haptics-status');
+    var on = localStorage.getItem('pace.haptics') !== '0';
+    if(tog){
+      tog.setAttribute('aria-checked', on ? 'true' : 'false');
+      tog.style.background = on ? 'var(--selfc-hi, #D4537E)' : 'var(--rule)';
+    }
+    if(knob) knob.style.transform = on ? 'translateX(18px)' : 'translateX(0)';
+    if(stat){
+      stat.textContent = !supported() ? 'Not available on this device — visuals carry the feeling instead'
+                       : on ? 'On — soft taps for done, sort, and release' : 'Off';
+      stat.style.color = on && supported() ? 'var(--creat-hi)' : 'var(--ink-faint)';
+    }
+  }
+  window.toggleHaptics = function(){
+    var on = localStorage.getItem('pace.haptics') !== '0';
+    localStorage.setItem('pace.haptics', on ? '0' : '1');
+    updateHapticsUI();
+    if(!on) play('select'); // a little hello when turning on
+  };
+  updateHapticsUI();
+
+  /* --- wiring via delegation (no edits inside other modules) --- */
+  function hap(name){ return function(){ play(name); }; }
+  document.addEventListener('click', function(e){
+    var t = e.target;
+    if(t.closest('#act-done, #dr-done, .dr-btn') && /done/i.test((t.closest('.dr-btn')||{}).textContent||'')) play('done');
+    else if(t.closest('#sort-do-now')) play('select');
+    else if(t.closest('#sort-letgo') || (t.closest('button') && /let go/i.test((t.closest('button')||{}).textContent||''))) play('release');
+    else if(t.closest('.prio-seg, .dr-pill, .ci-fpill, .ob-cat-pill')) play('tick');
+    else if(t.closest('#merge-btn-merge')) play('select');
+    else if(t.closest('#stale-nudge-break') || t.closest('#bd-confirm')) play('breakdown');
+    else if(t.closest('.pop-label')) play('select'); // bring cloud back
+    else if(t.closest('.tile-timer-pill')) play('timerStart');
+  }, true);
+
+  /* timer end haptic fires from the timer module's own finish() */
+})();
+</script>
 
 <script type="module">
 /* ===== WHISPER MODULE (transformers.js) ===== */
