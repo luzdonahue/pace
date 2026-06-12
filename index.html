@@ -2558,7 +2558,8 @@ document.querySelectorAll('.ci-fpill').forEach(function(pill){
 });
 
 document.getElementById('ci-continue').addEventListener('click', function(){
-  var ci = {date:new Date().toISOString().slice(0,10), energy:ciValues.energy, pain:ciValues.pain, focus:ciValues.focus, mood:ciValues.mood, capacity:ciValues.energy>=7?'high':ciValues.energy>=4?'med':'low', focusCategory:_ciFocusCategory||null};
+  // capacity stored via the same formula the check-in screen displays (calcCapacity: energy+focus+inverted pain)
+  var ci = {date:new Date().toISOString().slice(0,10), energy:ciValues.energy, pain:ciValues.pain, focus:ciValues.focus, mood:ciValues.mood, capacity:calcCapacity({energy:ciValues.energy, pain:ciValues.pain, focus:ciValues.focus}).level, focusCategory:_ciFocusCategory||null};
   store.saveCheckin(ci);
   renderToday();
   window._dumpFromCheckin = true;
@@ -2980,14 +2981,17 @@ document.getElementById('dump-mic').addEventListener('click', function(){
 
 /* ===== SORT SHEET ===== */
 var _sortItems = [];
+/* Order matters: first keyword hit wins. Communication verbs (email/text/reply)
+   are checked LAST so "email the bank about the bill" lands in admin, not social;
+   a bare "email Sam back" still falls through to social. */
 var CAT_KEYWORDS = {
   health:   ['pharmacy','pt','doctor','prescription','medical','pain','refill','therapy','appointment'],
-  social:   ['mum','mom','dad','text','call friend','message','email','reply','respond'],
   admin:    ['finance','audit','tax','bill','invoice','budget','money','bank','account'],
   home:     ['garden','water','clean','dishes','laundry','vacuum','tidy','groceries'],
   creative: ['tiktok','video','art','mosaic','write','draw','paint','design','create','photo'],
   work:     ['work','meeting','project','client','deadline','report','proposal'],
-  selfcare: ['rest','sleep','bath','meditate','yoga','walk','exercise','nap']
+  selfcare: ['rest','sleep','bath','meditate','yoga','walk','exercise','nap'],
+  social:   ['mum','mom','dad','text','call friend','message','email','reply','respond']
 };
 
 function guessCategory(text){
@@ -3408,8 +3412,8 @@ window.PaceAI = {
 var aiKeyInput = document.getElementById('ai-key-input');
 var aiKeyStatus = document.getElementById('ai-key-status');
 
-function updateAIStatus(){
-  var key = localStorage.getItem('pace.apikey') || '';
+function updateAIStatus(overrideKey){
+  var key = (overrideKey !== undefined) ? overrideKey : (localStorage.getItem('pace.apikey') || '');
   if(aiKeyStatus){
     if(key){
       aiKeyStatus.textContent = 'AI on — using Claude';
@@ -3424,7 +3428,12 @@ function updateAIStatus(){
 if(aiKeyInput){
   aiKeyInput.value = localStorage.getItem('pace.apikey') || '';
   updateAIStatus();
+  // Status follows what's typed; the key itself persists once on blur/change
+  // (was: a localStorage write on every keystroke).
   aiKeyInput.addEventListener('input', function(){
+    updateAIStatus(aiKeyInput.value.trim());
+  });
+  aiKeyInput.addEventListener('change', function(){
     var v = aiKeyInput.value.trim();
     if(v){ localStorage.setItem('pace.apikey', v); }
     else { localStorage.removeItem('pace.apikey'); }

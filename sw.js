@@ -1,5 +1,5 @@
 /* Pace service worker — cache-first so the app opens instantly, even offline. */
-var CACHE = 'pace-v12';
+var CACHE = 'pace-v13';
 var ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', function(e){
