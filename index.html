@@ -1486,14 +1486,15 @@ header.app-head{display:flex;align-items:baseline;justify-content:space-between;
     <div class="bd-eyebrow">Breaking down</div>
     <div class="bd-title" id="bd-title"></div>
     <button class="bd-back" id="bd-back">← back</button>
-    <p class="bd-help">Add 2+ small steps. You only need to do the first one.</p>
+    <p class="bd-help">These small steps replace the big task. You only need to do the first one.</p>
     <div class="bd-inputs" id="bd-inputs">
       <div class="bd-input-row"><input class="bd-input" type="text" placeholder="Step 1…" /><button class="bd-rm" type="button">×</button></div>
       <div class="bd-input-row"><input class="bd-input" type="text" placeholder="Step 2…" /><button class="bd-rm" type="button">×</button></div>
+      <div class="bd-input-row"><input class="bd-input" type="text" placeholder="Step 3…" /><button class="bd-rm" type="button">×</button></div>
     </div>
     <button class="bd-add-more" id="bd-add-more">+ add another step</button>
     <div class="bd-foot">
-      <button class="bd-confirm" id="bd-confirm">Add these →</button>
+      <button class="bd-confirm" id="bd-confirm">Replace it with these →</button>
     </div>
   </div>
 </div>
@@ -1661,6 +1662,16 @@ var store = {
   addTask: function(task){
     this._state.tasks.push(task);
     this.save();
+  },
+  /* 2B: atomic swap — newTasks in (at the parent's position), parent out,
+     ONE save. Never addTask-per-child followed by a delete: a crash
+     mid-sequence must never persist parent and children together. */
+  replaceTask: function(id, newTasks){
+    var i = this._state.tasks.findIndex(function(x){return x.id===id;});
+    if(i < 0) return false;
+    Array.prototype.splice.apply(this._state.tasks, [i,1].concat(newTasks));
+    this.save();
+    return true;
   },
   saveCheckin: function(ci){
     this._state.checkins.push(ci);
@@ -2331,9 +2342,57 @@ document.getElementById('resp-open-anyway').addEventListener('click', function()
 });
 
 /* ===== BREAKDOWN ===== */
+/* 2B (replace, don't stack): accepting a breakdown swaps the parent for its
+   steps atomically — see store.replaceTask. Cancel/back never touches state. */
+var _bdForTaskId = null; // which task the current bd-input fields were built for
+
+function makeBdRow(n){
+  var row = document.createElement('div');
+  row.className = 'bd-input-row';
+  row.innerHTML = '<input class="bd-input" type="text" placeholder="Step '+n+'…"><button class="bd-rm" type="button">\xd7</button>';
+  row.querySelector('.bd-rm').addEventListener('click', function(){ row.remove(); });
+  return row;
+}
+
+function resetBdInputs(){
+  ['bd-ai-status','bd-ai-hint'].forEach(function(id){ var el=document.getElementById(id); if(el) el.remove(); });
+  var wrap = document.getElementById('bd-inputs');
+  wrap.innerHTML = '';
+  for(var i=1;i<=3;i++) wrap.appendChild(makeBdRow(i));
+}
+
+/* 2B: breakdown prompt — exactly 3 concrete verb-first steps, JSON-only reply
+   (same contract style as buildDumpPrompt). Category, why and priority are NOT
+   asked for: children inherit them from the parent at accept time. */
+function buildBreakdownPrompt(task){
+  return 'You break one big task into tiny first steps for Pace, a gentle task app for people with limited energy.\n\n' +
+  'OUTPUT — reply with ONLY a JSON array, no prose, no markdown fences. Each element exactly:\n' +
+  '{"title": string, "energy": "body"|"mind"|"both"}\n\n' +
+  'RULES\n' +
+  '1. EXACTLY 3 steps — the first three real moves, in the order they would actually happen. Not abstract phases, not themes.\n' +
+  '2. Each title starts with a concrete verb and names a physical, specific action a tired person could start in under a minute ("Find the phone number", "Put the form on the table" — never "Research options", "Plan", "Organize", "Figure out").\n' +
+  '3. Keep each title under 10 words.\n' +
+  '4. energy: "body" if the step is mostly physical, "mind" if mostly mental, "both" if mixed.\n\n' +
+  'EXAMPLE\nTask: "Sort out car insurance"\nCorrect output:\n' +
+  '[{"title":"Find the current policy email","energy":"mind"},{"title":"Write the renewal date on a sticky note","energy":"both"},{"title":"Open one comparison site","energy":"mind"}]\n\n' +
+  'Now break down this task. Reply with ONLY the JSON array.\nTask: "' + task.name + '"' +
+  (task.why ? '\nWhy it matters to them: "' + String(task.why).slice(0,140) + '"' : '');
+}
+
 document.getElementById('dr-breakdown-btn').addEventListener('click', function(){
   document.getElementById('breakdown').classList.add('open');
-  // AI Breakdown (Feature 3): prefill steps if API key available
+  // Fresh 3 empty fields when this is a different task than the fields were
+  // built for — stale steps from another task must never be swapped in.
+  if(_openTaskId !== _bdForTaskId){
+    _bdForTaskId = _openTaskId;
+    resetBdInputs();
+  } else {
+    // Same task re-opened: keep what the user already typed or edited.
+    var hasText = false;
+    document.getElementById('bd-inputs').querySelectorAll('.bd-input').forEach(function(inp){ if(inp.value.trim()) hasText = true; });
+    if(hasText) return; // don't clobber their edits with a fresh AI call
+  }
+  // AI Breakdown: prefill exactly 3 steps if an API key is available
   var key = localStorage.getItem('pace.apikey');
   if(!key || !window.PaceAI || !_openTaskId) return;
   var state = store.get();
@@ -2350,12 +2409,24 @@ document.getElementById('dr-breakdown-btn').addEventListener('click', function()
   bdInputsEl.parentNode.insertBefore(statusEl, bdInputsEl);
   window.PaceAI.claudeCall([{
     role:'user',
-    content:'Break this task into 3-5 tiny, concrete first steps for someone with ADHD and chronic fatigue. Each step under 8 words, physically specific (not "plan" or "organize" — say the actual action). Task: "'+task.name+'". Why it matters: "'+( task.why||'not specified')+'". Reply ONLY a JSON array of strings, no explanation.'
+    content: buildBreakdownPrompt(task)
   }], 512)
   .then(function(raw){
     var json = raw.replace(/```[a-z]*\n?/gi,'').replace(/```/g,'').trim();
-    var steps = JSON.parse(json);
-    if(!Array.isArray(steps)||!steps.length) return;
+    var arr = JSON.parse(json);
+    if(!Array.isArray(arr)) throw new Error('malformed');
+    var VALID_ENERGY = {body:1,mind:1,both:1};
+    var steps = [];
+    arr.forEach(function(it){
+      try {
+        if(steps.length >= 3) return; // exactly 3 — extras dropped
+        if(!it || typeof it !== 'object' || Array.isArray(it)) return; // malformed item: drop it
+        var t = String(it.title||'').trim().slice(0,200);
+        if(!t) return;
+        steps.push({title:t, energy: VALID_ENERGY[it.energy] ? it.energy : 'both'});
+      } catch(itemErr){ /* one bad item never sinks the batch */ }
+    });
+    if(steps.length !== 3) throw new Error('malformed'); // fewer than 3 usable → manual fields stay
     // remove status, add hint note
     var st2 = document.getElementById('bd-ai-status');
     if(st2) st2.remove();
@@ -2364,24 +2435,24 @@ document.getElementById('dr-breakdown-btn').addEventListener('click', function()
     var hintEl = document.createElement('div');
     hintEl.id = 'bd-ai-hint';
     hintEl.style.cssText = 'font-size:11.5px;color:#534AB7;padding:0 2px 8px;line-height:1.45;';
-    hintEl.textContent = 'Suggestions — edit anything. You only have to do step 1.';
+    hintEl.textContent = 'Suggestions — edit anything. These replace the big task.';
     bdInputsEl.parentNode.insertBefore(hintEl, bdInputsEl);
     // clear existing inputs and repopulate
     bdInputsEl.innerHTML = '';
     steps.forEach(function(step, si){
-      var row = document.createElement('div');
-      row.className = 'bd-input-row';
-      row.innerHTML = '<input class="bd-input" type="text" placeholder="Step '+(si+1)+'…"><button class="bd-rm" type="button">\xd7</button>';
-      row.querySelector('.bd-input').value = String(step).trim();
+      var row = makeBdRow(si+1);
+      var inp = row.querySelector('.bd-input');
+      inp.value = step.title;
+      inp.dataset.energy = step.energy;
       // highlight first step (Feature 3: teal border)
       if(si === 0){
-        row.querySelector('.bd-input').style.border = '1.4px solid #1D9E75';
+        inp.style.border = '1.4px solid #1D9E75';
       }
-      row.querySelector('.bd-rm').addEventListener('click', function(){ row.remove(); });
       bdInputsEl.appendChild(row);
     });
   })
   .catch(function(){
+    // AI failure or junk reply → quiet manual fallback: empty fields stay usable
     var st3 = document.getElementById('bd-ai-status');
     if(st3) st3.remove();
   });
@@ -2402,21 +2473,31 @@ document.querySelectorAll('.bd-rm').forEach(function(btn){
 });
 document.getElementById('bd-confirm').addEventListener('click', function(){
   if(!_openTaskId) return;
-  var inputs = document.getElementById('bd-inputs').querySelectorAll('.bd-input');
-  var subtasks = [];
-  inputs.forEach(function(inp){ if(inp.value.trim()) subtasks.push(inp.value.trim()); });
-  if(subtasks.length < 1) return;
   var state = store.get();
   var parent = state.tasks.find(function(t){return t.id===_openTaskId;});
-  var catVal = parent ? parent.category : 'admin';
-  subtasks.forEach(function(name){
-    store.addTask({id:Math.random().toString(36).slice(2,10),name:name,category:catVal,priority:3,energy:'both',capacity:'low',types:[],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null});
+  if(!parent) return;
+  var steps = [];
+  document.getElementById('bd-inputs').querySelectorAll('.bd-input').forEach(function(inp){
+    var v = inp.value.trim();
+    if(!v) return;
+    var en = inp.dataset.energy;
+    steps.push({ title: v.slice(0,200), energy: (en==='body'||en==='mind'||en==='both') ? en : 'both' });
   });
-  if(parent) store.updateTask(_openTaskId, {priority:5});
+  if(steps.length < 1) return;
+  var today = new Date().toISOString().slice(0,10);
+  var prioVal = (parent.priority>=1 && parent.priority<=5) ? parent.priority : 3;
+  var whyVal = (parent.why && String(parent.why).trim()) ? String(parent.why).trim().slice(0,140) : '';
+  var children = steps.map(function(s){
+    return {id:Math.random().toString(36).slice(2,10),name:s.title,category:parent.category,priority:prioVal,energy:s.energy,capacity:'low',types:[],why:whyVal,notes:['step of: '+parent.name+' · '+today],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null};
+  });
+  // Atomic swap: one in-memory splice, ONE save (write-through). The parent
+  // and its steps can never be persisted together.
+  if(!store.replaceTask(parent.id, children)) return;
+  _bdForTaskId = null;
   document.getElementById('breakdown').classList.remove('open');
   closeDrawer();
   renderToday();
-  showToast('Subtasks added.');
+  showToast('Swapped it for '+children.length+' smaller step'+(children.length!==1?'s':'')+'.');
 });
 
 /* ===== MORNING CHECK-IN SLIDERS ===== */
@@ -4948,33 +5029,13 @@ function runMergeQueue(items, idx, added, done){
   });
 });
 
-/* --- Intercept: bd-confirm (breakdown subtasks) --- */
-var bdConfirm = document.getElementById('bd-confirm');
-if(bdConfirm){
-  var bdNew = bdConfirm.cloneNode(true);
-  bdConfirm.parentNode.replaceChild(bdNew, bdConfirm);
-  bdNew.addEventListener('click', function(){
-    var _openTaskId = window._getOpenTaskId ? window._getOpenTaskId() : null;
-    var inputs = document.getElementById('bd-inputs').querySelectorAll('.bd-input');
-    var subtasks = [];
-    inputs.forEach(function(inp){ if(inp.value.trim()) subtasks.push(inp.value.trim()); });
-    if(subtasks.length < 1) return;
-    var state2 = store.get();
-    var parent = _openTaskId ? state2.tasks.find(function(t){return t.id===_openTaskId;}) : null;
-    var catVal = parent ? parent.category : 'admin';
-    var taskObjs = subtasks.map(function(name){
-      return {id:Math.random().toString(36).slice(2,10),name:name,category:catVal,priority:3,energy:'both',capacity:'low',types:[],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null};
-    });
-    runMergeQueue(taskObjs, 0, [], function(toAdd){
-      toAdd.forEach(function(task){ store.addTask(task); });
-      if(parent && _openTaskId) store.updateTask(_openTaskId, {priority:5});
-      var bd = document.getElementById('breakdown'); if(bd) bd.classList.remove('open');
-      if(window.Pace && window.Pace.showScreen) {/* drawer stays */}
-      renderToday();
-      showToast('Subtasks added.');
-    });
-  });
-}
+/* --- bd-confirm: NOT intercepted since 2B (replace, don't stack) ---
+   Breakdown confirm lives in block 2 with atomic replace semantics
+   (store.replaceTask: steps in, parent out, one save). The merge queue is
+   deliberately not applied to breakdown steps: its per-item saves would
+   break the atomic swap, and steps derived from a task the user already
+   has are not "repeats". The clone-replace that used to live here killed
+   block 2's listener — do not reintroduce it for this button. */
 
 /* (repeat-count note renders inside the core openDrawer) */
 
