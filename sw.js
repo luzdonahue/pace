@@ -1,6 +1,12 @@
 /* Pace service worker — cache-first so the app opens instantly, even offline. */
-var CACHE = 'pace-v13';
-var ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+var CACHE = 'pace-v14'; // bumped for the module split; RE-VERIFY live sw.js at ship time (next unused vN)
+var ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
+  // ES modules — every file must be cached or the app white-screens offline
+  './boot.js',
+  './core-store.js', './core-logic.js',
+  './adapter-ai.js', './adapter-platform.js',
+  './ui-shell.js', './ui-today.js', './ui-checkin.js', './ui-dump-sort.js',
+  './ui-sort-screen.js', './ui-someday-goals.js', './ui-settings.js', './ui-weekly-merge.js'];
 
 self.addEventListener('install', function(e){
   e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(ASSETS); }).then(function(){ return self.skipWaiting(); }));
