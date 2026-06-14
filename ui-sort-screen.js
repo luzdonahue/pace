@@ -27,7 +27,7 @@ var CAT_LABEL = {
 function catColor(c){ return CAT_COLOR[c]||CAT_COLOR.admin; }
 function catCls(c){ return CAT_CLS[c]||CAT_CLS.admin; }
 function catLabel(c){ return CAT_LABEL[c]||CAT_LABEL.admin; }
-function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+var escHtml = window.Pace.escHtml; // S3: canonical quote-escaping variant from core-logic
 
 /* ----- SORT state ----- */
 var _sortQueue = [];

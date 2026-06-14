@@ -1,5 +1,5 @@
-import { store, storageAdapter } from './core-store.js';
-import { CAT, catCls, escHtml, timeOfDay, guessCategory, parseDump, buildDumpPrompt } from './core-logic.js';
+import { store, storageAdapter, loadSampleData, sanitizeState } from './core-store.js';
+import { CAT, catCls, escHtml, timeOfDay, guessCategory, parseDump, buildDumpPrompt, rolloverTasks, dateStr } from './core-logic.js';
 import { showScreen, showToast, applyCheckinGreeting } from './ui-shell.js';
 import { renderToday, openDrawer, closeDrawer, _openTaskId } from './ui-today.js';
 import { checkStaleTop } from './ui-checkin.js';
@@ -268,8 +268,7 @@ function showSortSheet(items, method){
 function openSortSheet(){
   var text = document.getElementById('dump-textarea').value.trim();
   if(!text){ showToast('Add something to sort first'); return; }
-  var key = localStorage.getItem('pace.apikey');
-  if(!key || !window.PaceAI){
+  if(!window.PaceAI || !window.PaceAI.available()){
     showSortSheet(parseDump(text), 'simple');
     return;
   }
@@ -354,6 +353,7 @@ function confirmSortItems(){
   _sortItems.forEach(function(item){
     var whyVal = (item.why && String(item.why).trim()) ? String(item.why).trim().slice(0,140) : (item._originalText && item._originalText !== item.name ? item._originalText : '');
     store.addTask({id:Math.random().toString(36).slice(2,10),name:item.name,category:item.category,priority:item.priority,energy:item.energy||'both',capacity:'med',types:[],why:whyVal,notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null});
+    store.logEvent('task_added', {source:'dump', energy:item.energy||'both', capacity:'med', category:item.category, types:[], checkinLevel:store._checkinLevel()}); // item 4
   });
   document.getElementById('dump-textarea').value = '';
   var sub = document.getElementById('ss-done-sub');
@@ -402,9 +402,22 @@ var _booted = false;
 function bootApp(){
   store.load(); // authoritative load — picks up anything init() restored from IndexedDB
   var state = store.get();
+  var today = new Date().toISOString().slice(0,10);
+
+  // 3.1 Day rollover — runs ONCE per calendar day, guarded by lastActiveDate.
+  // Pure rolloverTasks() re-parks untouched status:'today' tasks without shame flags.
+  if(state.onboarded && state.lastActiveDate && state.lastActiveDate !== today){
+    state.tasks = rolloverTasks(state, today);
+  }
+  // Always update lastActiveDate so subsequent same-day boots skip rollover.
+  state.lastActiveDate = today;
+  store.save();
+  store.logEvent('day_opened', {}); // item 4
+
   renderToday();
   applyCheckinGreeting();
-  var today = new Date().toISOString().slice(0,10);
+
+  // 3.2 Check-in gating: new day → check-in; same-day reopen → skip to today.
   if(!state.onboarded){
     showScreen('onboarding-welcome');
   } else if(state.lastCheckinDate !== today){
@@ -434,4 +447,4 @@ window.closeDrawer = closeDrawer;   // SEAM (added in split): consumed by ui-she
 window.checkStaleTop = checkStaleTop; // SEAM (added in split): consumed by ui-today.js renderToday
 window.timeOfDay = timeOfDay;
 window._getOpenTaskId = function(){ return _openTaskId; };
-window.Pace = { store: store, showScreen: showScreen, renderToday: renderToday, openDrawer: openDrawer, showToast: showToast, timeOfDay: timeOfDay, applyCheckinGreeting: applyCheckinGreeting };
+window.Pace = { store: store, showScreen: showScreen, renderToday: renderToday, openDrawer: openDrawer, showToast: showToast, timeOfDay: timeOfDay, applyCheckinGreeting: applyCheckinGreeting, _loadSampleData: loadSampleData, escHtml: escHtml, sanitizeState: sanitizeState };

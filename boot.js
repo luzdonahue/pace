@@ -14,6 +14,7 @@ import './ui-someday-goals.js';   // blocks 5 + 6
 import './ui-settings.js';        // block 7
 import './ui-weekly-merge.js';    // blocks 8 + 9
 import './adapter-platform.js';   // blocks 10 + 12 + 13: timer, haptics, whisper
+import './notificationAdapter.js'; // 3.3: reminder permission + in-app nudge fallback
 
 if('serviceWorker' in navigator && location.protocol==='https:'){
   window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); });

@@ -191,13 +191,77 @@ function setupToggle(id, storeKey){
     btn.classList.toggle('on', !!s2.prefs[storeKey]);
     btn.setAttribute('aria-checked', !!s2.prefs[storeKey]);
     if(storeKey==='flare'){
+      window.Pace.store.logEvent(s2.prefs[storeKey] ? 'flare_on' : 'flare_off', {}); // item 4
       var banner = document.getElementById('flare-banner');
       if(banner) banner.classList.toggle('show', !!s2.prefs[storeKey]);
       window.Pace.renderToday();
     }
   });
 }
-setupToggle('tog-reminders','reminders');
+// 3.3: Reminder toggle — shows/hides the time row; never auto-requests permission
+(function(){
+  var togReminders = document.getElementById('tog-reminders');
+  var timeRow = document.getElementById('reminder-time-row');
+  var timeInput = document.getElementById('reminder-time-input');
+  var permBtn = document.getElementById('reminder-permission-btn');
+  var statusEl = document.getElementById('reminder-status');
+
+  function updateReminderRow(){
+    var s = store.get();
+    var on = s.prefs && s.prefs.reminders;
+    if(timeRow) timeRow.style.display = on ? 'flex' : 'none';
+    if(timeInput && window.PaceNotifications){
+      var rt = window.PaceNotifications.getReminder();
+      if(rt) timeInput.value = rt;
+    }
+    updatePermStatus();
+  }
+  function updatePermStatus(){
+    if(!statusEl) return;
+    if(!window.PaceNotifications){ statusEl.textContent=''; return; }
+    if(window.PaceNotifications.notifGranted()){
+      statusEl.textContent = 'Notifications allowed — you\'ll get a gentle nudge.';
+    } else if(typeof Notification !== 'undefined' && Notification.permission === 'denied'){
+      statusEl.textContent = 'Notifications blocked — using in-app nudge instead.';
+    } else {
+      statusEl.textContent = 'Tap "Allow notifications" to enable device reminders, or the app will show a soft nudge when you open it.';
+    }
+  }
+
+  if(togReminders){
+    togReminders.addEventListener('click', function(){
+      var s2 = store.get();
+      if(!s2.prefs) s2.prefs={};
+      s2.prefs.reminders = !s2.prefs.reminders;
+      store.save();
+      togReminders.classList.toggle('on', !!s2.prefs.reminders);
+      togReminders.setAttribute('aria-checked', !!s2.prefs.reminders);
+      updateReminderRow();
+    });
+    // Sync initial state
+    (function(){ var s=store.get(); var on=s.prefs&&s.prefs.reminders; togReminders.classList.toggle('on',!!on); togReminders.setAttribute('aria-checked',!!on); })();
+  }
+  if(timeInput){
+    timeInput.addEventListener('change', function(){
+      if(window.PaceNotifications) window.PaceNotifications.setReminder(timeInput.value || null);
+    });
+  }
+  if(permBtn){
+    permBtn.addEventListener('click', function(){
+      if(!window.PaceNotifications){ return; }
+      window.PaceNotifications.requestPermission(function(result){
+        updatePermStatus();
+        if(result === 'granted'){
+          var rt = window.PaceNotifications.getReminder() || (timeInput && timeInput.value) || null;
+          if(rt) window.PaceNotifications.setReminder(rt);
+        }
+      });
+    });
+  }
+  // Show row if reminders already on (e.g. returning user)
+  updateReminderRow();
+})();
+
 setupToggle('tog-flare','flare');
 
 // Stepper
@@ -278,6 +342,20 @@ if(exportBtn){
   });
 }
 
+// 3.4 Load sample data (opt-in, never auto-seeded)
+var sampleBtn = document.getElementById('load-sample-btn');
+if(sampleBtn){
+  sampleBtn.addEventListener('click', function(){
+    var added = window.Pace._loadSampleData ? window.Pace._loadSampleData() : 0;
+    if(added > 0){
+      window.Pace.renderToday();
+      setDataMsg('Sample tasks added — have a look at your Today view.');
+    } else {
+      setDataMsg('Sample tasks are already loaded.');
+    }
+  });
+}
+
 if(importBtn && importFile){
   importBtn.addEventListener('click', function(){ importFile.value=''; importFile.click(); });
   importFile.addEventListener('change', function(){
@@ -294,7 +372,7 @@ if(importBtn && importFile){
       }
       var ok = window.confirm('This replaces your current data — export a backup first?\n\nOK imports the file. Cancel keeps everything as it is.');
       if(!ok){ setDataMsg('No changes made.'); return; }
-      store._state = data.state;
+      store._state = window.Pace.sanitizeState(data.state); // S4: sanitize before writing
       store.save();   // through the adapter: localStorage + IndexedDB
       store.load();   // re-read + backfill any missing fields
       loadProfile();

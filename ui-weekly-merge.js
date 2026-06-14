@@ -123,7 +123,7 @@ function renderWeekly(){
   renderMonthGlance();
 }
 
-function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+var escHtml = window.Pace.escHtml; // S3: canonical quote-escaping variant from core-logic
 
 /* ===== MONTH AT A GLANCE ===== */
 var _mgOffset = 0; // months relative to current
@@ -449,7 +449,7 @@ function hideMergeModal(){
   if(modal) modal.style.display='none';
 }
 
-function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+var escHtml = window.Pace.escHtml; // S3: canonical quote-escaping variant from core-logic
 
 document.getElementById('merge-btn-merge').addEventListener('click', function(){
   hideMergeModal();
@@ -470,6 +470,7 @@ function addTaskWithMerge(taskObj, onDone){
   var existing = similarTask(taskObj.name, state.tasks);
   if(!existing){
     store.addTask(taskObj);
+    store.logEvent('task_added', {source:'manual', energy:taskObj.energy||'both', capacity:taskObj.capacity||'med', category:taskObj.category||'admin', types:taskObj.types||[], checkinLevel:store._checkinLevel()}); // item 4
     if(onDone) onDone();
     return;
   }
@@ -488,6 +489,7 @@ function addTaskWithMerge(taskObj, onDone){
       showToast('Merged — it’s moved up a little');
     } else if(choice === 'keep'){
       store.addTask(taskObj);
+      store.logEvent('task_added', {source:'manual', energy:taskObj.energy||'both', capacity:taskObj.capacity||'med', category:taskObj.category||'admin', types:taskObj.types||[], checkinLevel:store._checkinLevel()}); // item 4
     }
     // cancel: do nothing
     if(onDone) onDone();
@@ -567,6 +569,7 @@ function runMergeQueue(items, idx, added, done){
       toAdd.forEach(function(item){
         var whyVal2 = (item.why && String(item.why).trim()) ? String(item.why).trim().slice(0,140) : (item._originalText && item._originalText !== item.name ? item._originalText : '');
         store.addTask({id:Math.random().toString(36).slice(2,10),name:item.name,category:item.category,priority:item.priority,energy:item.energy||'both',capacity:'med',types:[],why:whyVal2,notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null});
+        store.logEvent('task_added', {source:'dump', energy:item.energy||'both', capacity:'med', category:item.category||'admin', types:[], checkinLevel:store._checkinLevel()}); // item 4
       });
       var ta = document.getElementById('dump-textarea');
       if(ta) ta.value='';

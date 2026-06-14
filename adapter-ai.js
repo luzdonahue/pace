@@ -2,10 +2,82 @@
 (function(){
 'use strict';
 
+/* ===== AI PROXY CONFIG (roadmap item 5 — kill BYOK) =====
+   While PROXY_URL is empty (the default), Pace behaves EXACTLY as before: it uses
+   the key you paste in Settings (BYOK) and talks straight to api.anthropic.com.
+   To switch the whole app to the managed proxy (no key needed by anyone), set
+   PROXY_URL below to your deployed Cloudflare Worker URL — e.g.
+   'https://pace-ai-proxy.<your-subdomain>.workers.dev'. For device-local testing you
+   can instead run  localStorage.setItem('pace.proxyurl', '<url>')  in the console;
+   that override wins and lets you flip proxy mode on without redeploying the app.
+   When proxy mode is active the pasted key is ignored and never sent.
+   NOTE: the Worker is text-only — photo/vision transcription still needs a BYOK key. */
+var PROXY_URL = '';
+function proxyUrl(){
+  try { return (localStorage.getItem('pace.proxyurl') || PROXY_URL || '').trim(); }
+  catch(e){ return PROXY_URL; }
+}
+function deviceId(){
+  var id = '';
+  try { id = localStorage.getItem('pace.device') || ''; } catch(e){}
+  if(!/^[A-Za-z0-9-]{8,64}$/.test(id)){
+    id = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ('dev-' + Date.now() + '-' + Math.random().toString(36).slice(2, 12));
+    try { localStorage.setItem('pace.device', id); } catch(e){}
+  }
+  return id;
+}
+window._paceProxyActive = function(){ return !!proxyUrl(); };
+
 window.PaceAI = {
   getKey: function(){ return localStorage.getItem('pace.apikey') || ''; },
+  _remainingToday: null,
+
+  // True when AI (text) is reachable: managed proxy active OR a BYOK key is set.
+  // Use this — not a bare apikey check — to gate AI features. (Photo/vision is the
+  // one exception: the proxy is text-only, so it still requires a BYOK key.)
+  available: function(){ return !!(proxyUrl() || this.getKey()); },
 
   claudeCall: async function(messages, maxTokens){
+    if(proxyUrl()) return this._proxyCall(messages, maxTokens);
+    return this._byokCall(messages, maxTokens);
+  },
+
+  // Managed proxy path: no key in the browser; server holds it, rate-limits per device.
+  _proxyCall: async function(messages, maxTokens){
+    var resp;
+    try {
+      resp = await fetch(proxyUrl(), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-pace-device': deviceId()
+        },
+        body: JSON.stringify({
+          messages: messages,
+          max_tokens: maxTokens || 1024
+        })
+      });
+    } catch(e) {
+      throw new Error("Couldn't reach the AI — using simple sorting instead");
+    }
+    if(resp.status === 429){
+      var info = {};
+      try { info = await resp.json(); } catch(e){}
+      throw new Error((info && info.message) ? info.message
+        : "You've used today's AI sorting — it resets tomorrow. Simple sorting still works.");
+    }
+    if(!resp.ok) throw new Error("Couldn't reach the AI — using simple sorting instead");
+    var data;
+    try { data = await resp.json(); } catch(e){ throw new Error("Couldn't reach the AI — using simple sorting instead"); }
+    if(typeof data.remaining_today === 'number') this._remainingToday = data.remaining_today;
+    if(data.content && data.content[0] && data.content[0].text) return data.content[0].text;
+    throw new Error("Couldn't reach the AI — using simple sorting instead");
+  },
+
+  // BYOK path — unchanged from the pre-item-5 client (key pasted in Settings).
+  _byokCall: async function(messages, maxTokens){
     var key = this.getKey();
     if(!key) throw new Error('No API key set');
     var resp;
@@ -40,15 +112,23 @@ var aiKeyInput = document.getElementById('ai-key-input');
 var aiKeyStatus = document.getElementById('ai-key-status');
 
 function updateAIStatus(overrideKey){
+  if(!aiKeyStatus) return;
+  // Managed proxy mode: no key needed; the pasted key (if any) is ignored.
+  if(proxyUrl()){
+    var rem = window.PaceAI && typeof window.PaceAI._remainingToday === 'number';
+    aiKeyStatus.textContent = rem
+      ? ('AI on — managed by Pace · ' + window.PaceAI._remainingToday + ' left today')
+      : 'AI on — managed by Pace (no key needed)';
+    aiKeyStatus.style.color = 'var(--creat-hi)';
+    return;
+  }
   var key = (overrideKey !== undefined) ? overrideKey : (localStorage.getItem('pace.apikey') || '');
-  if(aiKeyStatus){
-    if(key){
-      aiKeyStatus.textContent = 'AI on — using Claude';
-      aiKeyStatus.style.color = 'var(--creat-hi)';
-    } else {
-      aiKeyStatus.textContent = 'AI off — using simple sorting';
-      aiKeyStatus.style.color = 'var(--ink-faint)';
-    }
+  if(key){
+    aiKeyStatus.textContent = 'AI on — using Claude';
+    aiKeyStatus.style.color = 'var(--creat-hi)';
+  } else {
+    aiKeyStatus.textContent = 'AI off — using simple sorting';
+    aiKeyStatus.style.color = 'var(--ink-faint)';
   }
 }
 

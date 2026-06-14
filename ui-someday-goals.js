@@ -13,7 +13,7 @@ function showToast(msg){
 
 var CAT_COLOR={health:'#EF9F27',selfcare:'#D4537E',creative:'#1D9E75',work:'#378ADD',admin:'#D85A30',home:'#639922',social:'#7F77DD'};
 var CAT_LABEL={health:'Health',selfcare:'Self-care',creative:'Creative',work:'Work',admin:'Admin',home:'Home',social:'Social'};
-function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+var escHtml = window.Pace.escHtml; // S3: canonical quote-escaping variant from core-logic
 
 var DRIFT_ANIMS = ['drift1 4.2s ease-in-out infinite','drift2 5.1s ease-in-out infinite','drift3 3.8s ease-in-out infinite'];
 var _openPopTaskId = null;
@@ -158,7 +158,7 @@ var showToast = function(msg){
   t.innerHTML='<span>✨</span> '+msg; t.classList.add('is-shown');
   setTimeout(function(){t.classList.remove('is-shown');},2600);
 };
-function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+var escHtml = window.Pace.escHtml; // S3: canonical quote-escaping variant from core-logic
 
 // Seed default goals if missing
 var GOAL_DEFAULTS = [
@@ -231,6 +231,7 @@ function renderGoals(){
         });
       } else {
         store.addTask(newTask);
+        window.Pace.store.logEvent('task_added', {source:'manual', energy:newTask.energy||'both', capacity:newTask.capacity||'med', category:newTask.category||'admin', types:newTask.types||[], checkinLevel:window.Pace.store._checkinLevel()}); // item 4
         window.Pace.renderToday();
         showToast('Added to today — p'+newTask.priority);
       }

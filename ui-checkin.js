@@ -1,5 +1,5 @@
 import { store } from './core-store.js';
-import { calcCapacity } from './core-logic.js';
+import { calcCapacity, escHtml } from './core-logic.js';
 import { showScreen, showToast, applyCheckinGreeting } from './ui-shell.js';
 import { renderToday, openDrawer } from './ui-today.js';
 
@@ -64,6 +64,7 @@ document.getElementById('ci-continue').addEventListener('click', function(){
   // capacity stored via the same formula the check-in screen displays (calcCapacity: energy+focus+inverted pain)
   var ci = {date:new Date().toISOString().slice(0,10), energy:ciValues.energy, pain:ciValues.pain, focus:ciValues.focus, mood:ciValues.mood, capacity:calcCapacity({energy:ciValues.energy, pain:ciValues.pain, focus:ciValues.focus}).level, focusCategory:_ciFocusCategory||null};
   store.saveCheckin(ci);
+  store.logEvent('checkin', {level:ci.capacity, energy:ci.energy, focus:ci.focus, pain:ci.pain, mood:ci.mood}); // item 4
   renderToday();
   window._dumpFromCheckin = true;
   showScreen('dump');
@@ -194,6 +195,7 @@ document.getElementById('empty-quick-add').addEventListener('keydown', function(
   var val = this.value.trim();
   if(!val) return;
   store.addTask({id:Math.random().toString(36).slice(2,10),name:val,category:'admin',priority:3,energy:'both',capacity:'med',types:[],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null});
+  store.logEvent('task_added', {source:'quick', energy:'both', capacity:'med', category:'admin', types:[], checkinLevel:store._checkinLevel()}); // item 4
   this.value='';
   renderToday();
 });
@@ -264,11 +266,10 @@ function checkStaleTop(visibleTasks){
   if(!candidate) return;
   var days = Math.floor((now - candidate.topSince) / 86400000);
   document.getElementById('stale-nudge-msg').innerHTML =
-    '「'+escHtml2(candidate.name)+'」 has sat at the top for '+days+' days. Too big is more likely than too lazy — want to make it smaller, or let it rest lower for now?';
+    '「'+escHtml(candidate.name)+'」 has sat at the top for '+days+' days. Too big is more likely than too lazy — want to make it smaller, or let it rest lower for now?';
   nudgeEl.style.display='block';
   nudgeEl.dataset.taskId = candidate.id;
 }
-function escHtml2(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 (function(){
   var br=document.getElementById('stale-nudge-break');

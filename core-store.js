@@ -14,13 +14,14 @@ var DEFAULT_TASKS = [
 ];
 
 var DEFAULT_STATE = {
-  tasks: DEFAULT_TASKS,
-  profile: {name:'Luz', intention:''},
+  tasks: [],   // 3.4: first-run starts EMPTY; demo tasks are opt-in via "Load sample data" in Settings
+  profile: {name:'', intention:''},
   categories: ['health','selfcare','creative','work','admin','home','social'],
   categoryParents: {},
   checkins: [],
   goals: [],
   wins: [],
+  events: [],  // item 4: append-only interaction log (no task text)
   prefs: {reminders:false, flare:false, medTasks:3},
   onboarded: false,
   lastCheckinDate: null
@@ -140,11 +141,18 @@ var store = {
     if(!s.wins) s.wins=[];
     if(!s.prefs) s.prefs={reminders:false,flare:false,medTasks:3};
     if(!s.categoryParents) s.categoryParents={};
+    if(!('lastActiveDate' in s)) s.lastActiveDate = null; // 3.1: day rollover guard
     // heal sparse states (e.g. hand-edited imports) so nothing crashes later
     if(!Array.isArray(s.tasks)) s.tasks=[];
     if(!Array.isArray(s.checkins)) s.checkins=[];
     if(!s.profile) s.profile={name:'',intention:''};
     if(!Array.isArray(s.categories) || !s.categories.length) s.categories=['health','selfcare','creative','work','admin','home','social'];
+    // S3: clamp goal.color on every boot — guards against bad values from old imports
+    if(Array.isArray(s.goals)) s.goals.forEach(function(g){
+      if(g && g.color && !/^#[0-9A-Fa-f]{3,8}$/.test(g.color)) g.color='#999999';
+    });
+    // item 4: event log — migrate existing installs
+    if(!Array.isArray(s.events)) s.events=[];
     return this._state;
   },
   save: function(){
@@ -173,7 +181,90 @@ var store = {
     this._state.checkins.push(ci);
     this._state.lastCheckinDate = new Date().toISOString().slice(0,10);
     this.save();
+  },
+  /* item 4: returns today's check-in capacity level (string e.g. 'low'|'med'|'high') or null */
+  _checkinLevel: function(){
+    var s = this._state;
+    var today = new Date().toISOString().slice(0,10);
+    if(!Array.isArray(s.checkins)) return null;
+    for(var i=s.checkins.length-1;i>=0;i--){
+      if(s.checkins[i] && s.checkins[i].date===today) return s.checkins[i].capacity||null;
+    }
+    return null;
+  },
+  /* item 4: append one event; cap at 5000 (drop oldest 500 on overflow).
+     Events MUST NOT carry task names/text — stays safe to export and share. */
+  logEvent: function(type, payload){
+    var s = this._state;
+    if(!Array.isArray(s.events)) s.events=[];
+    var ev = Object.assign({t: new Date().toISOString(), type: type}, payload);
+    s.events.push(ev);
+    if(s.events.length > 5000) s.events.splice(0, 500); // drop oldest 500
+    this.save();
   }
 };
 
-export { STORE_KEY, uid, DEFAULT_TASKS, DEFAULT_STATE, storageAdapter, store };
+/* 3.4: Inject demo tasks on demand (Settings → "Load sample data").
+   Safe to call multiple times — uses a name-based duplicate check so
+   existing real tasks are never wiped or duplicated. */
+function loadSampleData(){
+  var s = store.get();
+  var existingNames = {};
+  s.tasks.forEach(function(t){ existingNames[t.name] = 1; });
+  var added = 0;
+  DEFAULT_TASKS.forEach(function(tmpl){
+    if(existingNames[tmpl.name]) return; // already present (idempotent)
+    s.tasks.push(Object.assign({}, tmpl, {id: uid(), createdAt: new Date().toISOString()}));
+    added++;
+  });
+  if(added > 0) store.save();
+  return added;
+}
+
+/* S4: sanitizeState — run on import only (never on live state).
+   Deep-clones the incoming object, type-checks each field, and drops/clamps
+   unknown values so nothing untrusted reaches the render layer.
+   Pure function — no side-effects, no global reads. */
+function sanitizeState(state){
+  if(!state || typeof state !== 'object') return state;
+  var s = JSON.parse(JSON.stringify(state)); // deep clone — never mutate caller's object
+  var validCats = ['health','selfcare','creative','work','admin','home','social'];
+  var validStatus = ['today','backlog','done','not-today'];
+  // tasks
+  if(!Array.isArray(s.tasks)) s.tasks=[];
+  s.tasks = s.tasks.filter(function(t){ return t && typeof t === 'object'; });
+  s.tasks.forEach(function(t){
+    if(typeof t.id !== 'string') t.id='';
+    if(typeof t.name !== 'string') t.name=String(t.name||'');
+    if(validCats.indexOf(t.category)===-1) t.category='admin';
+    if(typeof t.priority !== 'number') t.priority=3;
+    if(t.energy !== null && typeof t.energy !== 'string') t.energy='';
+    if(typeof t.capacity !== 'string') t.capacity='';
+    if(!Array.isArray(t.types)) t.types=[];
+    if(typeof t.why !== 'string') t.why='';
+    if(!Array.isArray(t.notes)) t.notes=[];
+    if(validStatus.indexOf(t.status)===-1) t.status='backlog';
+  });
+  // goals — S3: validate color (attr-injection via imported backups)
+  if(!Array.isArray(s.goals)) s.goals=[];
+  s.goals = s.goals.filter(function(g){ return g && typeof g === 'object'; });
+  s.goals.forEach(function(g){
+    if(typeof g.id !== 'string') g.id='';
+    if(typeof g.name !== 'string') g.name=String(g.name||'');
+    if(!/^#[0-9A-Fa-f]{3,8}$/.test(g.color)) g.color='#999999';
+    if(typeof g.why !== 'string') g.why='';
+    var pct=g.pct; g.pct=(typeof pct==='number'&&pct>=0&&pct<=100)?pct:0;
+  });
+  // checkins
+  if(!Array.isArray(s.checkins)) s.checkins=[];
+  s.checkins = s.checkins.filter(function(c){ return c && typeof c === 'object'; });
+  s.checkins.forEach(function(c){
+    ['energy','focus','pain','mood','capacity'].forEach(function(k){
+      var v=c[k]; c[k]=(typeof v==='number')?Math.max(0,Math.min(10,v)):0;
+    });
+    if(typeof c.date !== 'string') c.date='';
+  });
+  return s;
+}
+
+export { STORE_KEY, uid, DEFAULT_TASKS, DEFAULT_STATE, storageAdapter, store, loadSampleData, sanitizeState };

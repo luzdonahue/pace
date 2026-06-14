@@ -191,6 +191,27 @@ function buildDumpPrompt(text){
   'Now parse this dump. Reply with ONLY the JSON array.\nDump: ' + text;
 }
 
+/* ===== DAY ROLLOVER (3.1) =====
+   Pure function — no DOM, no side effects. Call from bootApp on first boot of a new day.
+   Rule: any task still status:'today' that has not been touched (no completedAt, no
+   minutesGiven) simply stays on the plate for the new day. We strip any time-pressure
+   flags (staleSnooze, topSince, minutesAtTop) so the task arrives fresh without shame.
+   Completed tasks (status:'done') are left untouched.
+   Returns a NEW tasks array — caller must assign it back to state.tasks and call store.save(). */
+function rolloverTasks(state, todayStr){
+  return state.tasks.map(function(t){
+    if(t.status !== 'today') return t;
+    // Already completed or actively in progress: leave as-is
+    if(t.completedAt) return t;
+    // Re-park: strip time-pressure metadata; keep everything else
+    var rolled = Object.assign({}, t);
+    delete rolled.staleSnooze;
+    delete rolled.topSince;
+    delete rolled.minutesAtTop;
+    return rolled;
+  });
+}
+
 function getMondayOfWeek(offset){
   var now = new Date();
   var day = now.getDay(); // 0=Sun
@@ -219,4 +240,5 @@ function calcStreak(state){
 export { CAT, catCls, catColor, catRank, calcCapacity, fmtDate, escHtml, timeOfDay,
          buildBreakdownPrompt, CAT_KEYWORDS, guessCategory, DUMP_DELIMS, DUMP_FILLERS,
          DUMP_STARTERS, splitOnStarters, cleanDumpPart, parseDump, DUMP_CAT_DEFS,
-         DUMP_CAT_EXAMPLES, buildDumpPrompt, getMondayOfWeek, dateStr, calcStreak };
+         DUMP_CAT_EXAMPLES, buildDumpPrompt, getMondayOfWeek, dateStr, calcStreak,
+         rolloverTasks };

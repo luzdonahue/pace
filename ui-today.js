@@ -431,6 +431,7 @@ document.querySelectorAll('[data-energy]').forEach(function(p){
   p.addEventListener('click', function(){
     if(!_openTaskId) return;
     store.updateTask(_openTaskId, {energy:p.dataset.energy});
+    store.logEvent('task_edited', {field:'energy', checkinLevel:store._checkinLevel()}); // item 4
     document.querySelectorAll('[data-energy]').forEach(function(x){ x.classList.toggle('on', x===p); });
   });
 });
@@ -439,6 +440,7 @@ document.querySelectorAll('[data-cap]').forEach(function(p){
   p.addEventListener('click', function(){
     if(!_openTaskId) return;
     store.updateTask(_openTaskId, {capacity:p.dataset.cap});
+    store.logEvent('task_edited', {field:'capacity', checkinLevel:store._checkinLevel()}); // item 4
     document.querySelectorAll('[data-cap]').forEach(function(x){ x.classList.toggle('on', x===p); });
   });
 });
@@ -453,6 +455,7 @@ document.querySelectorAll('[data-type]').forEach(function(p){
     var idx = types.indexOf(p.dataset.type);
     if(idx>-1) types.splice(idx,1); else types.push(p.dataset.type);
     store.updateTask(_openTaskId, {types:types});
+    store.logEvent('task_edited', {field:'types', checkinLevel:store._checkinLevel()}); // item 4
     p.classList.toggle('on');
   });
 });
@@ -480,7 +483,9 @@ document.getElementById('dr-note-input').addEventListener('keydown', function(e)
 // Done action
 document.getElementById('dr-done').addEventListener('click', function(){
   if(!_openTaskId) return;
+  var _doneTask = store.get().tasks.find(function(t){return t.id===_openTaskId;});
   store.updateTask(_openTaskId, {status:'done', completedAt:new Date().toISOString()});
+  if(_doneTask) store.logEvent('task_completed', {energy:_doneTask.energy||null, capacity:_doneTask.capacity||null, category:_doneTask.category||null, types:_doneTask.types||[], checkinLevel:store._checkinLevel()}); // item 4
   var tile = document.querySelector('[data-task-id="'+_openTaskId+'"]');
   if(tile) tile.classList.add('is-done');
   closeDrawer();
@@ -497,7 +502,9 @@ document.getElementById('dr-not-today').addEventListener('click', function(){
   var tasks = state.tasks;
   var idx = tasks.findIndex(function(t){return t.id===_openTaskId;});
   if(idx>-1){
-    var task = tasks.splice(idx,1)[0];
+    var task = tasks[idx]; // ref before splice for logging
+    store.logEvent('task_not_today', {energy:task.energy||null, capacity:task.capacity||null, category:task.category||null, types:task.types||[], checkinLevel:store._checkinLevel()}); // item 4
+    tasks.splice(idx,1);
     // Punt tracking (Feature 1a)
     task.puntCount = (task.puntCount||0) + 1;
     task.puntLog = (task.puntLog||[]).concat([new Date().toISOString()]);
@@ -551,7 +558,9 @@ document.getElementById('resp-not-today').addEventListener('click', function(){
     var tasks = state.tasks;
     var idx = tasks.findIndex(function(t){return t.id===_openTaskId;});
     if(idx>-1){
-      var task=tasks.splice(idx,1)[0];
+      var task=tasks[idx]; // ref before splice for logging
+      store.logEvent('task_not_today', {energy:task.energy||null, capacity:task.capacity||null, category:task.category||null, types:task.types||[], checkinLevel:store._checkinLevel()}); // item 4
+      tasks.splice(idx,1);
       // Punt tracking (Feature 1b)
       task.puntCount = (task.puntCount||0) + 1;
       task.puntLog = (task.puntLog||[]).concat([new Date().toISOString()]);
@@ -608,9 +617,8 @@ document.getElementById('dr-breakdown-btn').addEventListener('click', function()
     document.getElementById('bd-inputs').querySelectorAll('.bd-input').forEach(function(inp){ if(inp.value.trim()) hasText = true; });
     if(hasText) return; // don't clobber their edits with a fresh AI call
   }
-  // AI Breakdown: prefill exactly 3 steps if an API key is available
-  var key = localStorage.getItem('pace.apikey');
-  if(!key || !window.PaceAI || !_openTaskId) return;
+  // AI Breakdown: prefill exactly 3 steps if AI is available (proxy or BYOK key)
+  if(!window.PaceAI || !window.PaceAI.available() || !_openTaskId) return;
   var state = store.get();
   var task = state.tasks.find(function(t){ return t.id===_openTaskId; });
   if(!task) return;
@@ -709,6 +717,7 @@ document.getElementById('bd-confirm').addEventListener('click', function(){
   // Atomic swap: one in-memory splice, ONE save (write-through). The parent
   // and its steps can never be persisted together.
   if(!store.replaceTask(parent.id, children)) return;
+  store.logEvent('breakdown_accepted', {childCount:children.length, checkinLevel:store._checkinLevel()}); // item 4
   _bdForTaskId = null;
   document.getElementById('breakdown').classList.remove('open');
   closeDrawer();
