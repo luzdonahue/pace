@@ -6,7 +6,7 @@ function uid(){ return Math.random().toString(36).slice(2,10); }
 var DEFAULT_TASKS = [
   {id:uid(),name:'Call pharmacy — refill',category:'health',priority:1,energy:'body',capacity:'low',types:['physical','admin'],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null},
   {id:uid(),name:'Rest window — protect it',category:'selfcare',priority:2,energy:'body',capacity:'low',types:['physical'],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null},
-  {id:uid(),name:'TikTok videos overdue',category:'creative',priority:3,energy:'mind',capacity:'high',types:['creative','cognitive'],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null},
+  {id:uid(),name:'Film a TikTok',category:'creative',priority:3,energy:'mind',capacity:'high',types:['creative','cognitive'],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null},
   {id:uid(),name:'Commission artwork',category:'creative',priority:3,energy:'mind',capacity:'med',types:['creative'],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null},
   {id:uid(),name:'Audit finances',category:'admin',priority:3,energy:'mind',capacity:'med',types:['cognitive','admin'],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null},
   {id:uid(),name:'Text mum back',category:'social',priority:4,energy:'both',capacity:'low',types:['social','emotional'],why:'',notes:[],emotion:null,status:'today',createdAt:new Date().toISOString(),completedAt:null},

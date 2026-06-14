@@ -1,5 +1,5 @@
 /* Pace service worker — cache-first so the app opens instantly, even offline. */
-var CACHE = 'pace-v18'; // item 5 client (proxy rewiring behind PROXY_URL flag in adapter-ai.js; PaceAI.available() gate in ui-dump-sort + ui-today; BYOK unchanged while flag empty); bumped from v17
+var CACHE = 'pace-v19'; // demo seed task renamed "TikTok videos overdue" → "Film a TikTok" (no shame framing); bumped from v18
 var ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   // ES modules — every file must be cached or the app white-screens offline
   './boot.js',
